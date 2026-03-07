@@ -1,0 +1,3 @@
+[submodule "components/zyrthi-hal"]
+	path = components/zyrthi-hal
+	url = ../zyrthi-hal
