@@ -1,0 +1,19 @@
+idf_component_register(
+    SRCS
+        "src/system.c"
+        "src/time.c"
+        "src/gpio.c"
+        "src/uart.c"
+        "src/i2c.c"
+        "src/adc.c"
+        "src/pwm.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        driver
+        esp_timer
+    PRIV_REQUIRES
+        esp_adc
+        zyrthi-hal
+    WHOLE_ARCHIVE
+)

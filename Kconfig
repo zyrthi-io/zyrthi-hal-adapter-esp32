@@ -1,0 +1,45 @@
+menu "ZYRTHI HAL Adapter ESP32"
+
+    config ZYRTHI_UART_DEFAULT_TX
+        int "Default UART TX Pin"
+        default 1
+        help
+            Default TX pin for UART0 (used by uart_default()).
+
+    config ZYRTHI_UART_DEFAULT_RX
+        int "Default UART RX Pin"
+        default 3
+        help
+            Default RX pin for UART0 (used by uart_default()).
+
+    config ZYRTHI_UART_DEFAULT_BAUD
+        int "Default UART Baud Rate"
+        default 115200
+        help
+            Default baud rate for UART0.
+
+    config ZYRTHI_I2C_DEFAULT_SDA
+        int "Default I2C SDA Pin"
+        default 21
+        help
+            Default SDA pin for I2C0 (used by i2c_default()).
+
+    config ZYRTHI_I2C_DEFAULT_SCL
+        int "Default I2C SCL Pin"
+        default 22
+        help
+            Default SCL pin for I2C0 (used by i2c_default()).
+
+    config ZYRTHI_I2C_DEFAULT_CLOCK
+        int "Default I2C Clock (Hz)"
+        default 100000
+        help
+            Default I2C bus clock frequency in Hz.
+
+    config ZYRTHI_PWM_DEFAULT_FREQ
+        int "Default PWM Frequency (Hz)"
+        default 5000
+        help
+            Default PWM frequency in Hz.
+
+endmenu
