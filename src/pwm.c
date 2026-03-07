@@ -1,146 +1,86 @@
 /**
  * @file pwm.c
- * @brief PWM 模块实现（基于 LEDC，多实例支持）
+ * @brief PWM 模块实现（基于 LEDC）
  */
-#include "zyrthi/hal/pwm.h"
+
 #include "zyrthi/adapter/esp32/config.h"
+#include "zyrthi/hal/def.h"
 #include "driver/ledc.h"
 #include "esp_log.h"
 
 static const char *TAG = "zyrthi.pwm";
 
-// PWM 通道上下文
-typedef struct {
-    bool in_use;
-    gpio_num_t pin;
-    ledc_channel_t channel;
-    ledc_timer_t timer;
-    u32_t freq_hz;
-    u32_t duty;  // 0-10000
-} pwm_ctx_t;
+#define LEDC_MODE LEDC_LOW_SPEED_MODE
+#define LEDC_TIMER_BIT LEDC_TIMER_13_BIT
+#define LEDC_MAX_DUTY ((1 << 13) - 1)
 
-// PWM 实例池
-static pwm_ctx_t pwm_channels[ZYRTHI_PWM_MAX_CHANNELS];
-static bool timers_initialized[ZYRTHI_PWM_MAX_TIMERS] = {false};
+typedef struct { bool in_use; gpio_num_t pin; ledc_channel_t ch; ledc_timer_t tim; u32_t freq, duty; } pwm_ch_t;
+static pwm_ch_t pwm_ch[ZYRTHI_PWM_MAX_CHANNELS];
+static bool timers_init[ZYRTHI_PWM_MAX_TIMERS] = {0};
 
-// LEDC 配置
-#define LEDC_MODE           LEDC_LOW_SPEED_MODE
-#define LEDC_TIMER_BIT      LEDC_TIMER_13_BIT  // 13-bit resolution (0-8191)
-#define LEDC_MAX_DUTY       ((1 << 13) - 1)    // 8191
+#include "zyrthi/hal/pwm.h"
 
-pwm_status_t pwm_init(u8_t pin, u32_t freq_hz) {
-    // 查找空闲通道
-    int free_channel = -1;
-    for (int i = 0; i < ZYRTHI_PWM_MAX_CHANNELS; i++) {
-        if (!pwm_channels[i].in_use) {
-            free_channel = i;
-            break;
-        }
-    }
+pwm_status_t pwm_open(u8_t pin, pwm_config_t cfg) {
+    int ch = -1;
+    for (int i = 0; i < ZYRTHI_PWM_MAX_CHANNELS; i++) if (!pwm_ch[i].in_use) { ch = i; break; }
+    if (ch < 0) { ESP_LOGE(TAG, "No free channels"); return PWM_ERROR_UNSUPPORTED; }
 
-    if (free_channel < 0) {
-        ESP_LOGE(TAG, "No free PWM channels");
-        return PWM_ERROR_UNSUPPORTED;
-    }
-
-    // 分配定时器（每4个通道共享一个定时器）
-    ledc_timer_t timer = (ledc_timer_t)(free_channel / 4);
-
-    // 初始化定时器（如果尚未初始化）
-    if (!timers_initialized[timer]) {
-        ledc_timer_config_t timer_cfg = {
+    ledc_timer_t tim = (ledc_timer_t)(ch / 4);
+    if (!timers_init[tim]) {
+        ledc_timer_config_t t = {
             .speed_mode = LEDC_MODE,
             .duty_resolution = LEDC_TIMER_BIT,
-            .timer_num = timer,
-            .freq_hz = freq_hz,
+            .timer_num = tim,
+            .freq_hz = cfg.freq_hz,
             .clk_cfg = LEDC_AUTO_CLK,
         };
-        
-        esp_err_t ret = ledc_timer_config(&timer_cfg);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "ledc_timer_config failed: %s", esp_err_to_name(ret));
-            return PWM_ERROR_INVALID_ARG;
-        }
-        timers_initialized[timer] = true;
+        if (ledc_timer_config(&t) != ESP_OK) return PWM_ERROR_INVALID_ARG;
+        timers_init[tim] = true;
     }
 
-    // 配置通道
-    ledc_channel_config_t ch_cfg = {
+    u32_t d = (cfg.duty > 10000) ? 10000 : cfg.duty;
+    ledc_channel_config_t c = {
         .gpio_num = (gpio_num_t)pin,
         .speed_mode = LEDC_MODE,
-        .channel = (ledc_channel_t)free_channel,
+        .channel = (ledc_channel_t)ch,
         .intr_type = LEDC_INTR_DISABLE,
-        .timer_sel = timer,
-        .duty = 0,
+        .timer_sel = tim,
+        .duty = (d * LEDC_MAX_DUTY) / 10000,
         .hpoint = 0,
     };
+    if (ledc_channel_config(&c) != ESP_OK) return PWM_ERROR_INVALID_PIN;
 
-    esp_err_t ret = ledc_channel_config(&ch_cfg);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "ledc_channel_config failed: %s", esp_err_to_name(ret));
-        return PWM_ERROR_INVALID_PIN;
-    }
-
-    // 保存上下文
-    pwm_channels[free_channel].in_use = true;
-    pwm_channels[free_channel].pin = (gpio_num_t)pin;
-    pwm_channels[free_channel].channel = (ledc_channel_t)free_channel;
-    pwm_channels[free_channel].timer = timer;
-    pwm_channels[free_channel].freq_hz = freq_hz;
-    pwm_channels[free_channel].duty = 0;
-
-    ESP_LOGI(TAG, "PWM initialized: pin=%d, freq=%d Hz, channel=%d", pin, freq_hz, free_channel);
+    pwm_ch[ch] = (pwm_ch_t){true, (gpio_num_t)pin, (ledc_channel_t)ch, tim, cfg.freq_hz, d};
+    ESP_LOGI(TAG, "PWM opened: pin=%d, freq=%lu", pin, (unsigned long)cfg.freq_hz);
     return PWM_OK;
 }
 
-static pwm_ctx_t* find_channel_by_pin(u8_t pin) {
-    for (int i = 0; i < ZYRTHI_PWM_MAX_CHANNELS; i++) {
-        if (pwm_channels[i].in_use && pwm_channels[i].pin == pin) {
-            return &pwm_channels[i];
+pwm_status_t pwm_close(u8_t pin) {
+    for (int i = 0; i < ZYRTHI_PWM_MAX_CHANNELS; i++)
+        if (pwm_ch[i].in_use && pwm_ch[i].pin == pin) {
+            ledc_stop(LEDC_MODE, pwm_ch[i].ch, 0);
+            pwm_ch[i].in_use = false;
+            ESP_LOGI(TAG, "PWM closed: pin=%d", pin);
+            return PWM_OK;
         }
-    }
-    return NULL;
+    return PWM_ERROR_INVALID_PIN;
 }
 
 pwm_status_t pwm_write(u8_t pin, u32_t duty) {
-    pwm_ctx_t *ctx = find_channel_by_pin(pin);
-    if (ctx == NULL) {
-        ESP_LOGE(TAG, "Pin %d not initialized as PWM", pin);
-        return PWM_ERROR_INVALID_PIN;
-    }
-
-    if (duty > 10000) {
-        duty = 10000;  // clamp
-    }
-
-    // 转换 duty: 0-10000 -> 0-LEDC_MAX_DUTY
-    u32_t ledc_duty = (duty * LEDC_MAX_DUTY) / 10000;
-
-    esp_err_t ret = ledc_set_duty(LEDC_MODE, ctx->channel, ledc_duty);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "ledc_set_duty failed: %s", esp_err_to_name(ret));
-        return PWM_ERROR_INVALID_ARG;
-    }
-
-    ret = ledc_update_duty(LEDC_MODE, ctx->channel);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "ledc_update_duty failed: %s", esp_err_to_name(ret));
-        return PWM_ERROR_INVALID_ARG;
-    }
-
-    ctx->duty = duty;
-    return PWM_OK;
+    for (int i = 0; i < ZYRTHI_PWM_MAX_CHANNELS; i++)
+        if (pwm_ch[i].in_use && pwm_ch[i].pin == pin) {
+            if (duty > 10000) duty = 10000;
+            ledc_set_duty(LEDC_MODE, pwm_ch[i].ch, (duty * LEDC_MAX_DUTY) / 10000);
+            ledc_update_duty(LEDC_MODE, pwm_ch[i].ch);
+            pwm_ch[i].duty = duty;
+            return PWM_OK;
+        }
+    return PWM_ERROR_INVALID_PIN;
 }
 
 pwm_result_t pwm_read(u8_t pin) {
-    pwm_result_t result = { .status = PWM_ERROR_INVALID_PIN, .duty = 0 };
-
-    pwm_ctx_t *ctx = find_channel_by_pin(pin);
-    if (ctx == NULL) {
-        return result;
-    }
-
-    result.status = PWM_OK;
-    result.duty = ctx->duty;
-    return result;
+    for (int i = 0; i < ZYRTHI_PWM_MAX_CHANNELS; i++)
+        if (pwm_ch[i].in_use && pwm_ch[i].pin == pin)
+            return (pwm_result_t){PWM_OK, pwm_ch[i].duty};
+    return (pwm_result_t){PWM_ERROR_INVALID_PIN, 0};
 }

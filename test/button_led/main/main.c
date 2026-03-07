@@ -10,7 +10,7 @@
 static const char *TAG = "main";
 
 // 引脚定义 (根据你的板子修改)
-#define LED_PIN     1       // 板载 LED (通常 GPIO2)
+#define LED_PIN     2       // 板载 LED (通常 GPIO2)
 #define BUTTON_PIN  0       // BOOT 按键 (GPIO0)
 
 void app_main(void) {

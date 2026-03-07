@@ -136,12 +136,12 @@ static void test_uart(void) {
     }
     ESP_LOGI(TAG, "uart_default: PASS");
 
-    uart_status_t status = uart_init(uart, 115200);
+    uart_status_t status = uart_open(uart, (uart_config_t){ .baud = 115200 });
     if (status != UART_OK) {
-        ESP_LOGE(TAG, "uart_init: FAIL (status=%d)", status);
+        ESP_LOGE(TAG, "uart_open: FAIL (status=%d)", status);
         return;
     }
-    ESP_LOGI(TAG, "uart_init: PASS");
+    ESP_LOGI(TAG, "uart_open: PASS");
 
     // 发送测试
     uart_result_t result = uart_puts(uart, "Hello from ZYRTHI HAL!\r\n");
@@ -154,6 +154,13 @@ static void test_uart(void) {
 
 static void test_adc(void) {
     ESP_LOGI(TAG, "--- ADC Test ---");
+
+    // 打开 ADC 引脚
+    adc_status_t open_status = adc_open(ADC_PIN, (adc_config_t){ .atten = 3 });
+    if (open_status != ADC_OK) {
+        ESP_LOGE(TAG, "adc_open: FAIL (status=%d)", open_status);
+        return;
+    }
     
     adc_result_t result = adc_read(ADC_PIN);
     if (result.status == ADC_OK) {
@@ -167,12 +174,12 @@ static void test_adc(void) {
 static void test_pwm(void) {
     ESP_LOGI(TAG, "--- PWM Test ---");
     
-    pwm_status_t status = pwm_init(PWM_PIN, 5000);
+    pwm_status_t status = pwm_open(PWM_PIN, (pwm_config_t){ .freq_hz = 5000 });
     if (status != PWM_OK) {
-        ESP_LOGE(TAG, "pwm_init: FAIL (status=%d)", status);
+        ESP_LOGE(TAG, "pwm_open: FAIL (status=%d)", status);
         return;
     }
-    ESP_LOGI(TAG, "pwm_init: PASS");
+    ESP_LOGI(TAG, "pwm_open: PASS");
 
     // 呼吸灯效果
     ESP_LOGI(TAG, "PWM breathing...");
@@ -199,12 +206,12 @@ static void test_i2c(void) {
     }
     ESP_LOGI(TAG, "i2c_default: PASS");
 
-    i2c_status_t status = i2c_init(i2c, 100000);
+    i2c_status_t status = i2c_open(i2c, (i2c_config_t){ .clock_hz = 100000 });
     if (status != I2C_OK) {
-        ESP_LOGE(TAG, "i2c_init: FAIL (status=%d)", status);
+        ESP_LOGE(TAG, "i2c_open: FAIL (status=%d)", status);
         return;
     }
-    ESP_LOGI(TAG, "i2c_init: PASS");
+    ESP_LOGI(TAG, "i2c_open: PASS");
 
     // I2C 设备扫描
     ESP_LOGI(TAG, "I2C bus scan:");

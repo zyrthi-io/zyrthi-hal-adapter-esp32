@@ -2,216 +2,139 @@
  * @file uart.c
  * @brief UART 模块实现（多实例支持）
  */
-#include "zyrthi/hal/uart.h"
+
 #include "zyrthi/adapter/esp32/config.h"
+#include "zyrthi/hal/uart.h"
+
+/* ============================================================
+ * ESP-IDF 类型冲突解决
+ * HAL 已定义 uart_config_t，ESP-IDF 也有同名类型
+ * 通过宏将 ESP-IDF 的 uart_config_t 重命名为 esp_uart_config_t
+ * ============================================================ */
+#define uart_config_t esp_uart_config_t
 #include "driver/uart.h"
+#undef uart_config_t
+/* ============================================================ */
+
 #include "esp_log.h"
 #include "string.h"
 
 static const char *TAG = "zyrthi.uart";
 
-// UART 上下文结构
-typedef struct {
-    uart_port_t port;
-    bool initialized;
-    u32_t baud;
-} uart_ctx_t;
+struct uart_inst { uart_port_t port; bool initialized; u32_t baud; };
+static struct uart_inst uart_instances[ZYRTHI_UART_MAX_INSTANCES];
 
-// UART 实例池
-static uart_ctx_t uart_ctxs[ZYRTHI_UART_MAX_INSTANCES];
+uart_hdl_t uart_default(void) { return &uart_instances[0]; }
+uart_hdl_t uart_get(u8_t num) { return (num < ZYRTHI_UART_MAX_INSTANCES) ? &uart_instances[num] : NULL; }
 
-// 端口号转换
-static inline uart_port_t hdl_to_port(uart_hdl_t hdl) {
-    return (uart_port_t)(intptr_t)hdl;
-}
+uart_status_t uart_open(uart_hdl_t hdl, uart_config_t cfg) {
+    if (!hdl) return UART_ERROR_INVALID_ARG;
+    uart_port_t port = hdl->port;
+    if (hdl->initialized) uart_driver_delete(port);
 
-static inline uart_hdl_t port_to_hdl(uart_port_t port) {
-    return (uart_hdl_t)(intptr_t)(port + 1);  // +1 避免 NULL
-}
+    u8_t db = cfg.data_bits ? cfg.data_bits : 8;
+    u8_t sb = cfg.stop_bits ? cfg.stop_bits : 1;
 
-uart_hdl_t uart_default(void) {
-    // 返回 UART0 句柄
-    return port_to_hdl(UART_NUM_0);
-}
+    uart_word_length_t db_val = UART_DATA_8_BITS;
+    if (db == 5) db_val = UART_DATA_5_BITS;
+    else if (db == 6) db_val = UART_DATA_6_BITS;
+    else if (db == 7) db_val = UART_DATA_7_BITS;
 
-uart_status_t uart_init(uart_hdl_t hdl, u32_t baud) {
-    uart_port_t port = hdl_to_port(hdl);
-    
-    // 验证端口
-    if (port < 0 || port >= ZYRTHI_UART_MAX_INSTANCES) {
-        ESP_LOGE(TAG, "Invalid UART handle");
-        return UART_ERROR_INVALID_ARG;
-    }
+    uart_stop_bits_t sb_val = (sb == 2) ? UART_STOP_BITS_2 : UART_STOP_BITS_1;
+    uart_parity_t p_val = UART_PARITY_DISABLE;
+    if (cfg.parity == 1) p_val = UART_PARITY_ODD;
+    else if (cfg.parity == 2) p_val = UART_PARITY_EVEN;
 
-    // 已经初始化过，先删除
-    if (uart_ctxs[port].initialized) {
-        uart_driver_delete(port);
-    }
-
-    // 配置 UART
-    uart_config_t cfg = {
-        .baud_rate = baud,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
+    // 使用 ESP-IDF 类型调用其 API
+    esp_uart_config_t esp_cfg = {
+        .baud_rate = cfg.baud,
+        .data_bits = db_val,
+        .parity = p_val,
+        .stop_bits = sb_val,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
     };
 
-    esp_err_t ret = uart_param_config(port, &cfg);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "uart_param_config failed: %s", esp_err_to_name(ret));
-        return UART_ERROR_INVALID_ARG;
-    }
+    if (uart_param_config(port, &esp_cfg) != ESP_OK) return UART_ERROR_INVALID_ARG;
 
-    // 设置引脚（使用默认引脚）
-    int tx_pin, rx_pin;
-    switch (port) {
-        case UART_NUM_0:
-            tx_pin = ZYRTHI_UART_DEFAULT_TX;
-            rx_pin = ZYRTHI_UART_DEFAULT_RX;
-            break;
-        case UART_NUM_1:
-            // UART1 默认引脚（可根据需要修改）
-            tx_pin = 4;
-            rx_pin = 5;
-            break;
+    int tx = cfg.tx_pin, rx = cfg.rx_pin;
+    if (tx == 0 || rx == 0) {
+        if (port == 0) { if (!tx) tx = ZYRTHI_UART_DEFAULT_TX; if (!rx) rx = ZYRTHI_UART_DEFAULT_RX; }
+        else if (port == 1) { if (!tx) tx = 4; if (!rx) rx = 5; }
 #if ZYRTHI_UART_MAX_INSTANCES > 2
-        case UART_NUM_2:
-            tx_pin = 17;
-            rx_pin = 16;
-            break;
+        else if (port == 2) { if (!tx) tx = 17; if (!rx) rx = 16; }
 #endif
-        default:
-            return UART_ERROR_INVALID_ARG;
+        else return UART_ERROR_INVALID_ARG;
     }
 
-    ret = uart_set_pin(port, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "uart_set_pin failed: %s", esp_err_to_name(ret));
-        return UART_ERROR_INVALID_ARG;
-    }
+    if (uart_set_pin(port, tx, rx, -1, -1) != ESP_OK) return UART_ERROR_INVALID_ARG;
+    if (uart_driver_install(port, 256, 256, 0, NULL, 0) != ESP_OK) return UART_ERROR_INVALID_ARG;
 
-    // 安装驱动
-    ret = uart_driver_install(port, 256, 256, 0, NULL, 0);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "uart_driver_install failed: %s", esp_err_to_name(ret));
-        return UART_ERROR_INVALID_ARG;
-    }
+    hdl->initialized = true;
+    hdl->baud = cfg.baud;
+    ESP_LOGI(TAG, "UART%d opened: baud=%lu, TX=%d, RX=%d", port, (unsigned long)cfg.baud, tx, rx);
+    return UART_OK;
+}
 
-    uart_ctxs[port].port = port;
-    uart_ctxs[port].initialized = true;
-    uart_ctxs[port].baud = baud;
-
-    ESP_LOGI(TAG, "UART%d initialized at %d baud", port, baud);
+uart_status_t uart_close(uart_hdl_t hdl) {
+    if (!hdl || !hdl->initialized) return UART_ERROR_INVALID_ARG;
+    uart_driver_delete(hdl->port);
+    hdl->initialized = false;
+    ESP_LOGI(TAG, "UART%d closed", hdl->port);
     return UART_OK;
 }
 
 uart_status_t uart_putc(uart_hdl_t hdl, u8_t c) {
-    uart_port_t port = hdl_to_port(hdl);
-    
-    if (port < 0 || port >= ZYRTHI_UART_MAX_INSTANCES || !uart_ctxs[port].initialized) {
-        return UART_ERROR_INVALID_ARG;
-    }
-
-    int ret = uart_write_bytes(port, &c, 1);
-    if (ret != 1) {
-        return UART_ERROR_TIMEOUT;
-    }
-
-    return UART_OK;
+    if (!hdl || !hdl->initialized) return UART_ERROR_INVALID_ARG;
+    return (uart_write_bytes(hdl->port, &c, 1) == 1) ? UART_OK : UART_ERROR_TIMEOUT;
 }
 
 uart_result_t uart_getc(uart_hdl_t hdl) {
-    uart_port_t port = hdl_to_port(hdl);
-    uart_result_t result = { .status = UART_ERROR_INVALID_ARG };
-
-    if (port < 0 || port >= ZYRTHI_UART_MAX_INSTANCES || !uart_ctxs[port].initialized) {
-        return result;
-    }
-
+    uart_result_t r = {.status = UART_ERROR_INVALID_ARG};
+    if (!hdl || !hdl->initialized) return r;
     u8_t c;
-    int ret = uart_read_bytes(port, &c, 1, pdMS_TO_TICKS(ZYRTHI_UART_TIMEOUT_MS));
-    if (ret == 1) {
-        result.status = UART_OK;
-        result.data.ch = c;
-    } else if (ret == 0) {
-        result.status = UART_ERROR_TIMEOUT;
-    } else {
-        result.status = UART_ERROR_EMPTY;
-    }
-
-    return result;
+    int ret = uart_read_bytes(hdl->port, &c, 1, pdMS_TO_TICKS(ZYRTHI_UART_TIMEOUT_MS));
+    if (ret == 1) { r.status = UART_OK; r.data.ch = c; }
+    else r.status = (ret == 0) ? UART_ERROR_TIMEOUT : UART_ERROR_EMPTY;
+    return r;
 }
 
 uart_result_t uart_available(uart_hdl_t hdl) {
-    uart_port_t port = hdl_to_port(hdl);
-    uart_result_t result = { .status = UART_ERROR_INVALID_ARG };
-
-    if (port < 0 || port >= ZYRTHI_UART_MAX_INSTANCES || !uart_ctxs[port].initialized) {
-        return result;
-    }
-
+    uart_result_t r = {.status = UART_ERROR_INVALID_ARG};
+    if (!hdl || !hdl->initialized) return r;
     size_t len;
-    uart_get_buffered_data_len(port, &len);
-    
-    result.status = UART_OK;
-    result.data.available = len > 0;
-
-    return result;
+    uart_get_buffered_data_len(hdl->port, &len);
+    r.status = UART_OK; r.data.available = len > 0;
+    return r;
 }
 
 uart_result_t uart_puts(uart_hdl_t hdl, const char_t* str) {
-    uart_port_t port = hdl_to_port(hdl);
-    uart_result_t result = { .status = UART_ERROR_INVALID_ARG };
-
-    if (port < 0 || port >= ZYRTHI_UART_MAX_INSTANCES || !uart_ctxs[port].initialized) {
-        return result;
-    }
-
-    if (str == NULL) {
-        result.status = UART_ERROR_INVALID_ARG;
-        return result;
-    }
-
+    uart_result_t r = {.status = UART_ERROR_INVALID_ARG};
+    if (!hdl || !hdl->initialized || !str) return r;
     u32_t len = strlen(str);
-    int ret = uart_write_bytes(port, str, len);
-    
-    result.status = (ret == len) ? UART_OK : UART_ERROR_TIMEOUT;
-    result.data.len = ret;
-
-    return result;
+    int ret = uart_write_bytes(hdl->port, str, len);
+    r.status = (ret == (int)len) ? UART_OK : UART_ERROR_TIMEOUT;
+    r.data.len = ret;
+    return r;
 }
 
 uart_result_t uart_gets(uart_hdl_t hdl, char_t* buf, u32_t len) {
-    uart_port_t port = hdl_to_port(hdl);
-    uart_result_t result = { .status = UART_ERROR_INVALID_ARG };
-
-    if (port < 0 || port >= ZYRTHI_UART_MAX_INSTANCES || !uart_ctxs[port].initialized) {
-        return result;
-    }
-
-    if (buf == NULL || len == 0) {
-        result.status = UART_ERROR_INVALID_ARG;
-        return result;
-    }
-
-    u32_t idx = 0;
-    while (idx < len - 1) {
+    uart_result_t r = {.status = UART_ERROR_INVALID_ARG};
+    if (!hdl || !hdl->initialized || !buf || !len) return r;
+    u32_t i = 0;
+    while (i < len - 1) {
         u8_t c;
-        int ret = uart_read_bytes(port, &c, 1, pdMS_TO_TICKS(ZYRTHI_UART_TIMEOUT_MS));
-        if (ret != 1) {
-            break;
-        }
-        if (c == '\n' || c == '\r') {
-            break;
-        }
-        buf[idx++] = c;
+        if (uart_read_bytes(hdl->port, &c, 1, pdMS_TO_TICKS(ZYRTHI_UART_TIMEOUT_MS)) != 1) break;
+        if (c == '\n' || c == '\r') break;
+        buf[i++] = c;
     }
-    buf[idx] = '\0';
+    buf[i] = '\0';
+    r.status = i ? UART_OK : UART_ERROR_EMPTY;
+    r.data.len = i;
+    return r;
+}
 
-    result.status = (idx > 0) ? UART_OK : UART_ERROR_EMPTY;
-    result.data.len = idx;
-
-    return result;
+void uart_adapter_init(void) {
+    for (int i = 0; i < ZYRTHI_UART_MAX_INSTANCES; i++)
+        uart_instances[i] = (struct uart_inst){.port = i};
 }

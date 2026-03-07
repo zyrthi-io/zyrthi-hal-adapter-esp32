@@ -54,12 +54,15 @@ extern "C" {
 #if defined(ZYRTHI_CHIP_ESP32)
     #define ZYRTHI_ADC1_MAX_CHANNELS  8
     #define ZYRTHI_ADC2_MAX_CHANNELS  10
+    #define ZYRTHI_ADC_MAX_CHANNELS   18
 #elif defined(ZYRTHI_CHIP_ESP32S3)
     #define ZYRTHI_ADC1_MAX_CHANNELS  10
     #define ZYRTHI_ADC2_MAX_CHANNELS  10
+    #define ZYRTHI_ADC_MAX_CHANNELS   20
 #elif defined(ZYRTHI_CHIP_ESP32C3)
     #define ZYRTHI_ADC1_MAX_CHANNELS  5
     #define ZYRTHI_ADC2_MAX_CHANNELS  5
+    #define ZYRTHI_ADC_MAX_CHANNELS   10
 #endif
 
 /* ==========================
