@@ -1,0 +1,16 @@
+name: zyrthi/hal-adapter-esp32
+version: "0.1.0"
+description: ESP32 HAL adapter implementation
+license: MIT
+
+platform: esp32
+board: any
+
+dependencies:
+  zyrthi/hal: ">=0.1.0"
+
+include: include
+src: src
+
+# ESP-IDF 组件配置
+idf_component: true

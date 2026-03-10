@@ -7,3 +7,5 @@ managed_components/
 
 # IDE
 .clangd/
+deps/
+.cache/
