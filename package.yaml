@@ -7,7 +7,11 @@ platform: esp32
 board: any
 
 dependencies:
-  zyrthi/hal: ">=0.1.0"
+  zyrthi/hal: "0.1.0"
+
+repositories:
+  - name: central
+    url: https://dehub-io.github.io/dehub-repository/
 
 include: include
 src: src
